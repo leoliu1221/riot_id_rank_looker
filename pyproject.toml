@@ -1,0 +1,14 @@
+[project]
+name = "riot-id-rank-looker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas>=2.3.3",
+    "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
+    "streamlit>=1.54.0",
+]
+[project.scripts]
+check-ranks = "cli:main"
