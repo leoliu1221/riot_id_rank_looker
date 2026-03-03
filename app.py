@@ -37,15 +37,34 @@ with st.sidebar:
 # --- API FETCH FUNCTION ---
 def get_player_rank(riot_id):
     try:
+        # 1. Input Validation: Ensure # exists
+        if '#' not in riot_id:
+            return "Invalid ID Format", 0, "Invalid ID Format", 0
+            
         name, tag = riot_id.split('#')
-        # 1. Get PUUID
+        
+        # 2. Get PUUID
         acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
-        acc_data = requests.get(acc_url).json()
-        puuid = acc_data['puuid']
+        acc_res = requests.get(acc_url)
+        
+        # Handle 404 (Not Found) or 403 (Invalid Key)
+        if acc_res.status_code != 200:
+            return "Account Not Found", 0, "N/A", 0
+            
+        acc_data = acc_res.json()
+        puuid = acc_data.get('puuid') # Use .get() to avoid KeyError
 
-        # 3. Get Rank
+        if not puuid:
+            return "PUUID Missing", 0, "N/A", 0
+
+        # 3. Get Rank Data
         league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
-        league_data = requests.get(league_url).json()
+        league_res = requests.get(league_url)
+        
+        if league_res.status_code != 200:
+            return "API Error", 0, "API Error", 0
+            
+        league_data = league_res.json()
 
         # Initialize defaults
         solo_rank, solo_lp = "Unranked", 0
@@ -53,18 +72,23 @@ def get_player_rank(riot_id):
 
         # Loop through results to find specific queues
         for entry in league_data:
-            if entry['queueType'] == 'RANKED_SOLO_5x5':
-                solo_rank = f"{entry['tier']} {entry['rank']}"
-                solo_lp = entry['leaguePoints']
-            elif entry['queueType'] == 'RANKED_FLEX_SR':
-                flex_rank = f"{entry['tier']} {entry['rank']}"
-                flex_lp = entry['leaguePoints']
+            queue = entry.get('queueType')
+            tier = entry.get('tier', 'Unknown')
+            rank = entry.get('rank', '')
+            lp = entry.get('leaguePoints', 0)
+
+            if queue == 'RANKED_SOLO_5x5':
+                solo_rank = f"{tier} {rank}".strip()
+                solo_lp = lp
+            elif queue == 'RANKED_FLEX_SR':
+                flex_rank = f"{tier} {rank}".strip()
+                flex_lp = lp
                 
         return solo_rank, solo_lp, flex_rank, flex_lp
 
-    except Exception as e:
-        # In case of API errors or network issues
-        return "Error", 0, "Error", 0
+    except Exception:
+        # Catch-all for network timeouts or other weirdness
+        return "Not Found", 0, "Not Found", 0
 
 # --- MAIN UI ---
 input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1\nDoublelift#NA1")
