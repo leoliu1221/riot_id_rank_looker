@@ -117,11 +117,11 @@ if st.button("Check Ranks"):
             # If duration < 0.1s, it was almost certainly a cache hit.
             # If it took longer, it was a real API call, so we must sleep.
             if duration > 0.1:
-                time.sleep(1.2) 
+                time.sleep(0.1) 
             else:
                 # Optional: tiny sleep just to keep the UI from flickering 
                 # too fast for the user to see the progress
-                time.sleep(0.05)
+                time.sleep(0.02)
 
         status_text.success("✅ Done!")
         
