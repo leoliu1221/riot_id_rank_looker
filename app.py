@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 import sqlite3
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- DATABASE SETUP ---
 DB_NAME = "riot_data.db"
@@ -24,6 +25,7 @@ def init_db():
 init_db()
 
 def get_cached_player(riot_id):
+    # Use a fresh connection for thread safety
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT solo_rank, solo_lp, flex_rank, flex_lp, last_updated FROM players WHERE riot_id=?", (riot_id,))
@@ -41,25 +43,17 @@ def save_player(riot_id, s_rank, s_lp, f_rank, f_lp):
               (riot_id, s_rank, s_lp, f_rank, f_lp, now))
     conn.commit()
     conn.close()
-# Load .env file automatically
+
+# Load API Key
 load_dotenv()
-API_KEY = os.getenv("RIOT_API_KEY")
-if API_KEY:
-    st.success("API Key loaded from .env")
-else:
-    try:
-        API_KEY = st.secrets["RIOT_API_KEY"]
-        st.success("API Key loaded from Streamlit secrets")
-    except Exception as e:
-        API_KEY = None
-        st.error(f"RIOT_API_KEY not found in .env or Streamlit secrets: {e}")
+API_KEY = os.getenv("RIOT_API_KEY") or st.secrets.get("RIOT_API_KEY")
+
 st.set_page_config(page_title="Riot Rank Checker", page_icon="🎮")
-st.title("🏆 Riot ID Bulk Rank Checker")
+st.title("🚀 Parallel Riot Rank Checker")
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Settings")
-    # Regional routing mapping
     region_options = {
         "North America": {"id": "na1", "route": "americas"},
         "Europe West": {"id": "euw1", "route": "europe"},
@@ -70,29 +64,33 @@ with st.sidebar:
     choice = st.selectbox("Select Region", list(region_options.keys()))
     REG = region_options[choice]
     
-    # Cache management
-    if st.button("🔄 Clear Cached Ranks"):
-        st.cache_data.clear()
-        st.toast("Cache cleared!")
+    # Thread Control: Be careful with higher numbers on Dev Keys!
+    max_workers = st.slider("Parallel Threads", 1, 10, 5, help="How many requests to send at once.")
 
-def get_player_rank(riot_id):
-    # 1. Check SQLite first
-    cached_data = get_cached_player(riot_id)
+def fetch_single_player(rid):
+    """Function to be run in parallel for each Riot ID."""
+    # 1. Check SQLite Cache
+    cached_data = get_cached_player(rid)
     if cached_data:
         s_rank, s_lp, f_rank, f_lp, last_updated = cached_data
         update_time = datetime.strptime(last_updated, '%Y-%m-%d %H:%M:%S')
-        
-        # If data is less than 24 hours old, return it immediately
         if datetime.now() - update_time < timedelta(hours=24):
-            return s_rank, s_lp, f_rank, f_lp, True # True means it was a cache hit
+            return {"Riot ID": rid, "Solo Rank": s_rank, "Solo LP": s_lp, "Flex Rank": f_rank, "Flex LP": f_lp}
 
-    # 2. If not in DB or data is stale, call Riot API
+    # 2. Fetch from API
     try:
-        name, tag = riot_id.split('#')
+        name, tag = rid.split('#')
+        # Account V1
         acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
-        acc_data = requests.get(acc_url).json()
-        puuid = acc_data['puuid']
+        acc_res = requests.get(acc_url)
+        
+        # Handle Rate Limiting (429)
+        if acc_res.status_code == 429:
+            return {"Riot ID": rid, "Solo Rank": "Rate Limited", "Solo LP": 0, "Flex Rank": "Rate Limited", "Flex LP": 0}
+            
+        puuid = acc_res.json()['puuid']
 
+        # League V4
         league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
         league_data = requests.get(league_url).json()
 
@@ -105,55 +103,47 @@ def get_player_rank(riot_id):
             elif entry['queueType'] == 'RANKED_FLEX_SR':
                 flex_rank, flex_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
 
-        # 3. Save the new data to SQLite
-        save_player(riot_id, solo_rank, solo_lp, flex_rank, flex_lp)
-        return solo_rank, solo_lp, flex_rank, flex_lp, False # False means API was called
+        # Save to Cache
+        save_player(rid, solo_rank, solo_lp, flex_rank, flex_lp)
         
+        return {
+            "Riot ID": rid, 
+            "Solo Rank": solo_rank, "Solo LP": solo_lp,
+            "Flex Rank": flex_rank, "Flex LP": flex_lp
+        }
     except Exception:
-        return "Not Found", 0, "Not Found", 0, False
+        return {"Riot ID": rid, "Solo Rank": "Not Found", "Solo LP": 0, "Flex Rank": "Not Found", "Flex LP": 0}
 
 # --- MAIN UI ---
-input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1\nDoublelift#NA1")
+input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1")
 
-if st.button("Check Ranks"):
-    if input_text:
-        ids = [i.strip() for i in input_text.split("\n") if "#" in i]
+if st.button("Check Ranks (Parallel)"):
+    if not API_KEY:
+        st.error("Missing API Key.")
+    elif input_text:
+        ids = list(set([i.strip() for i in input_text.split("\n") if "#" in i])) # set() removes duplicates
         results = []
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
-
-        for i, rid in enumerate(ids):
-            status_text.text(f"Checking {rid}...")
-            
-            # Record start time to see if it was a "fast" cache hit
-            start_time = time.time()
-            
-            # Call your cached function
-            s_rank, s_lp, f_rank, f_lp, is_cached = get_player_rank(rid)
-            
-            # Calculate how long the function took
-            duration = time.time() - start_time
-            
-            results.append({
-                "Riot ID": rid, 
-                "Solo Rank": s_rank, "Solo LP": s_lp,
-                "Flex Rank": f_rank, "Flex LP": f_lp
-            })
-            
-            progress_bar.progress((i + 1) / len(ids))
-
-            # --- SMART SLEEP LOGIC ---
-            # If duration < 0.1s, it was almost certainly a cache hit.
-            # If it took longer, it was a real API call, so we must sleep.
-            if not is_cached:
-                time.sleep(0.02)
-
-        status_text.success("✅ Done!")
         
-        # Create DataFrame
+        # --- PARALLEL EXECUTION ENGINE ---
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Map the function to our list of IDs
+            future_to_rid = {executor.submit(fetch_single_player, rid): rid for rid in ids}
+            
+            for i, future in enumerate(as_completed(future_to_rid)):
+                data = future.result()
+                results.append(data)
+                
+                # Update progress
+                progress_bar.progress((i + 1) / len(ids))
+                status_text.text(f"Processed {i+1}/{len(ids)}: {data['Riot ID']}")
+
+        status_text.success(f"✅ Finished processing {len(ids)} IDs!")
+        
+        # Create DataFrame and Display Results
         df = pd.DataFrame(results)
-        
-        # --- 1. DISPLAY TABLE ---
         st.subheader("📋 Detailed Results")
         st.dataframe(df, use_container_width=True)
 
