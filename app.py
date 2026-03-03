@@ -40,16 +40,10 @@ def get_player_rank(riot_id):
         name, tag = riot_id.split('#')
         # 1. Get PUUID
         acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
-        acc_res = requests.get(acc_url)
-        acc_data = acc_res.json()
-        
-        # Error handling for invalid Riot ID
-        if 'puuid' not in acc_data:
-            return "Not Found", 0, "Not Found", 0
-            
+        acc_data = requests.get(acc_url).json()
         puuid = acc_data['puuid']
 
-        # 2. Get Rank Data
+        # 3. Get Rank
         league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
         league_data = requests.get(league_url).json()
 
