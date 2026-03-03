@@ -11,7 +11,7 @@ API_KEY = os.getenv("RIOT_API_KEY")
 if API_KEY:
     st.success("API Key loaded from .env")
 else:
-    API_KEY = st.secrets["RIOT_API_KEY"] if "RIOT_API_KEY" in st.secrets else None
+    API_KEY = st.secrets["RIOT_API_KEY"]
     if API_KEY:
         st.success("API Key loaded from Streamlit secrets")
     else:
