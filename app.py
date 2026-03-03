@@ -67,52 +67,68 @@ with st.sidebar:
     # Thread Control: Be careful with higher numbers on Dev Keys!
     max_workers = st.slider("Parallel Threads", 1, 10, 5, help="How many requests to send at once.")
 
-def fetch_single_player(rid):
-    """Function to be run in parallel for each Riot ID."""
-    # 1. Check SQLite Cache
+def fetch_single_player(rid, retries=3, backoff=2):
+    """
+    Fetches player data with built-in retry logic for Rate Limits (429).
+    retries: Number of times to attempt the call.
+    backoff: Seconds to wait, doubling each time.
+    """
+    # 1. Check SQLite Cache First (Same as before)
     cached_data = get_cached_player(rid)
     if cached_data:
         s_rank, s_lp, f_rank, f_lp, last_updated = cached_data
         update_time = datetime.strptime(last_updated, '%Y-%m-%d %H:%M:%S')
         if datetime.now() - update_time < timedelta(hours=24):
-            return {"Riot ID": rid, "Solo Rank": s_rank, "Solo LP": s_lp, "Flex Rank": f_rank, "Flex LP": f_lp}
+            return {"Riot ID": rid, "Solo Rank": s_rank, "Solo LP": s_lp, 
+                    "Flex Rank": f_rank, "Flex LP": f_lp, "Source": "Cache"}
 
-    # 2. Fetch from API
-    try:
-        name, tag = rid.split('#')
-        # Account V1
-        acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
-        acc_res = requests.get(acc_url)
-        
-        # Handle Rate Limiting (429)
-        if acc_res.status_code == 429:
-            return {"Riot ID": rid, "Solo Rank": "Rate Limited", "Solo LP": 0, "Flex Rank": "Rate Limited", "Flex LP": 0}
+    # 2. API Call Loop with Retry Logic
+    for attempt in range(retries):
+        try:
+            name, tag = rid.split('#')
+            # Account V1
+            acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
+            acc_res = requests.get(acc_url)
             
-        puuid = acc_res.json()['puuid']
+            # If Rate Limited (429), wait and retry
+            if acc_res.status_code == 429:
+                wait_time = backoff * (2 ** attempt) # Exponential backoff: 2s, 4s, 8s
+                time.sleep(wait_time)
+                continue 
+            
+            # If other error (404, 403), stop immediately
+            if acc_res.status_code != 200:
+                return {"Riot ID": rid, "Solo Rank": "Not Found", "Solo LP": 0, "Flex Rank": "N/A", "Flex LP": 0, "Source": "API Error"}
 
-        # League V4
-        league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
-        league_data = requests.get(league_url).json()
+            puuid = acc_res.json()['puuid']
 
-        solo_rank, solo_lp = "Unranked", 0
-        flex_rank, flex_lp = "Unranked", 0
+            # League V4
+            league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
+            league_res = requests.get(league_url)
+            
+            if league_res.status_code == 429:
+                time.sleep(backoff * (2 ** attempt))
+                continue
 
-        for entry in league_data:
-            if entry['queueType'] == 'RANKED_SOLO_5x5':
-                solo_rank, solo_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
-            elif entry['queueType'] == 'RANKED_FLEX_SR':
-                flex_rank, flex_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
+            league_data = league_res.json()
+            solo_rank, solo_lp = "Unranked", 0
+            flex_rank, flex_lp = "Unranked", 0
 
-        # Save to Cache
-        save_player(rid, solo_rank, solo_lp, flex_rank, flex_lp)
-        
-        return {
-            "Riot ID": rid, 
-            "Solo Rank": solo_rank, "Solo LP": solo_lp,
-            "Flex Rank": flex_rank, "Flex LP": flex_lp
-        }
-    except Exception:
-        return {"Riot ID": rid, "Solo Rank": "Not Found", "Solo LP": 0, "Flex Rank": "Not Found", "Flex LP": 0}
+            for entry in league_data:
+                if entry['queueType'] == 'RANKED_SOLO_5x5':
+                    solo_rank, solo_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
+                elif entry['queueType'] == 'RANKED_FLEX_SR':
+                    flex_rank, flex_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
+
+            # Save to Cache & Return
+            save_player(rid, solo_rank, solo_lp, flex_rank, flex_lp)
+            return {"Riot ID": rid, "Solo Rank": solo_rank, "Solo LP": solo_lp, 
+                    "Flex Rank": flex_rank, "Flex LP": flex_lp, "Source": "API"}
+
+        except Exception:
+            break # Exit loop on catastrophic failure
+
+    return {"Riot ID": rid, "Solo Rank": "Timeout/Limit", "Solo LP": 0, "Flex Rank": "N/A", "Flex LP": 0, "Source": "Failed"}
 
 # --- MAIN UI ---
 input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1")
