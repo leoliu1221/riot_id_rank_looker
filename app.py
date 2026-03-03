@@ -87,40 +87,48 @@ def get_player_rank(riot_id, region_id, region_route):
 input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1\nDoublelift#NA1")
 
 if st.button("Check Ranks"):
-    if not API_KEY:
-        st.error("Please add RIOT_API_KEY to your .env file.")
-    elif input_text:
-        # Split and clean the list of IDs
+    if input_text:
         ids = [i.strip() for i in input_text.split("\n") if "#" in i]
         results = []
-        
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         for i, rid in enumerate(ids):
-            status_text.text(f"Processing {rid} ({i+1}/{len(ids)})...")
+            status_text.text(f"Checking {rid}...")
             
-            # Unpack the 4 values from the updated get_player_rank function
-            s_rank, s_lp, f_rank, f_lp = get_player_rank(rid)
+            # Record start time to see if it was a "fast" cache hit
+            start_time = time.time()
+            
+            # Call your cached function
+            s_rank, s_lp, f_rank, f_lp = get_player_rank(rid, REG['id'], REG['route'])
+            
+            # Calculate how long the function took
+            duration = time.time() - start_time
             
             results.append({
                 "Riot ID": rid, 
-                "Solo Rank": s_rank, 
-                "Solo LP": s_lp,
-                "Flex Rank": f_rank, 
-                "Flex LP": f_lp
+                "Solo Rank": s_rank, "Solo LP": s_lp,
+                "Flex Rank": f_rank, "Flex LP": f_lp
             })
             
-            # Progress bar and rate limit delay
             progress_bar.progress((i + 1) / len(ids))
-            time.sleep(1.2) 
+
+            # --- SMART SLEEP LOGIC ---
+            # If duration < 0.1s, it was almost certainly a cache hit.
+            # If it took longer, it was a real API call, so we must sleep.
+            if duration > 0.1:
+                time.sleep(1.2) 
+            else:
+                # Optional: tiny sleep just to keep the UI from flickering 
+                # too fast for the user to see the progress
+                time.sleep(0.05)
 
         status_text.success("✅ Done!")
         
         # Create DataFrame
         df = pd.DataFrame(results)
         
-# --- 1. DISPLAY TABLE ---
+        # --- 1. DISPLAY TABLE ---
         st.subheader("📋 Detailed Results")
         st.dataframe(df, use_container_width=True)
 
@@ -137,7 +145,9 @@ if st.button("Check Ranks"):
 
         # Helper function to extract just the Tier (e.g., "GOLD IV" -> "GOLD")
         def get_tier(rank_str):
-            return rank_str.split(' ')[0]
+            if not rank_str or " " not in rank_str:
+                return rank_str # Returns "Unranked" or "Error" as is
+            return rank_str.split(' ')[0] # Returns "GOLD" from "GOLD IV"
 
         df['Solo Tier'] = df['Solo Rank'].apply(get_tier)
         df['Flex Tier'] = df['Flex Rank'].apply(get_tier)
