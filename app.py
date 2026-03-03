@@ -4,7 +4,43 @@ import time
 import pandas as pd
 import os
 from dotenv import load_dotenv
+import sqlite3
+from datetime import datetime, timedelta
 
+# --- DATABASE SETUP ---
+DB_NAME = "riot_data.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS players
+                 (riot_id TEXT PRIMARY KEY, 
+                  solo_rank TEXT, solo_lp INTEGER, 
+                  flex_rank TEXT, flex_lp INTEGER, 
+                  last_updated DATETIME)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_cached_player(riot_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT solo_rank, solo_lp, flex_rank, flex_lp, last_updated FROM players WHERE riot_id=?", (riot_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def save_player(riot_id, s_rank, s_lp, f_rank, f_lp):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute('''INSERT OR REPLACE INTO players 
+                 (riot_id, solo_rank, solo_lp, flex_rank, flex_lp, last_updated) 
+                 VALUES (?, ?, ?, ?, ?, ?)''', 
+              (riot_id, s_rank, s_lp, f_rank, f_lp, now))
+    conn.commit()
+    conn.close()
 # Load .env file automatically
 load_dotenv()
 API_KEY = os.getenv("RIOT_API_KEY")
@@ -39,49 +75,42 @@ with st.sidebar:
         st.cache_data.clear()
         st.toast("Cache cleared!")
 
-# --- CACHED API FETCH FUNCTION ---
-# ttl=3600 means results are saved for 1 hour (3600 seconds)
-@st.cache_data(ttl=43200, show_spinner=False)
-def get_player_rank(riot_id, region_id, region_route):
-    try:
-        if '#' not in riot_id:
-            return "Invalid ID", 0, "Invalid ID", 0
-            
-        name, tag = riot_id.split('#')
+def get_player_rank(riot_id):
+    # 1. Check SQLite first
+    cached_data = get_cached_player(riot_id)
+    if cached_data:
+        s_rank, s_lp, f_rank, f_lp, last_updated = cached_data
+        update_time = datetime.strptime(last_updated, '%Y-%m-%d %H:%M:%S')
         
-        # 1. Get PUUID
-        acc_url = f"https://{region_route}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
-        acc_res = requests.get(acc_url)
-        
-        if acc_res.status_code != 200:
-            return "Not Found", 0, "N/A", 0
-            
-        puuid = acc_res.json().get('puuid')
+        # If data is less than 24 hours old, return it immediately
+        if datetime.now() - update_time < timedelta(hours=24):
+            return s_rank, s_lp, f_rank, f_lp, True # True means it was a cache hit
 
-        # 2. Get Rank Data
-        league_url = f"https://{region_id}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
-        league_res = requests.get(league_url)
-        
-        if league_res.status_code != 200:
-            return "API Error", 0, "API Error", 0
-            
-        league_data = league_res.json()
+    # 2. If not in DB or data is stale, call Riot API
+    try:
+        name, tag = riot_id.split('#')
+        acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
+        acc_data = requests.get(acc_url).json()
+        puuid = acc_data['puuid']
+
+        league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
+        league_data = requests.get(league_url).json()
 
         solo_rank, solo_lp = "Unranked", 0
         flex_rank, flex_lp = "Unranked", 0
 
         for entry in league_data:
             if entry['queueType'] == 'RANKED_SOLO_5x5':
-                solo_rank = f"{entry['tier']} {entry['rank']}"
-                solo_lp = entry['leaguePoints']
+                solo_rank, solo_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
             elif entry['queueType'] == 'RANKED_FLEX_SR':
-                flex_rank = f"{entry['tier']} {entry['rank']}"
-                flex_lp = entry['leaguePoints']
-                
-        return solo_rank, solo_lp, flex_rank, flex_lp
+                flex_rank, flex_lp = f"{entry['tier']} {entry['rank']}", entry['leaguePoints']
 
+        # 3. Save the new data to SQLite
+        save_player(riot_id, solo_rank, solo_lp, flex_rank, flex_lp)
+        return solo_rank, solo_lp, flex_rank, flex_lp, False # False means API was called
+        
     except Exception:
-        return "Error", 0, "Error", 0
+        return "Not Found", 0, "Not Found", 0, False
 
 # --- MAIN UI ---
 input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1\nDoublelift#NA1")
@@ -100,7 +129,7 @@ if st.button("Check Ranks"):
             start_time = time.time()
             
             # Call your cached function
-            s_rank, s_lp, f_rank, f_lp = get_player_rank(rid, REG['id'], REG['route'])
+            s_rank, s_lp, f_rank, f_lp, is_cached = get_player_rank(rid)
             
             # Calculate how long the function took
             duration = time.time() - start_time
@@ -116,11 +145,7 @@ if st.button("Check Ranks"):
             # --- SMART SLEEP LOGIC ---
             # If duration < 0.1s, it was almost certainly a cache hit.
             # If it took longer, it was a real API call, so we must sleep.
-            if duration > 0.1:
-                time.sleep(0.1) 
-            else:
-                # Optional: tiny sleep just to keep the UI from flickering 
-                # too fast for the user to see the progress
+            if not is_cached:
                 time.sleep(0.02)
 
         status_text.success("✅ Done!")
