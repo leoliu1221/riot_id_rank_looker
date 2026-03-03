@@ -11,11 +11,12 @@ API_KEY = os.getenv("RIOT_API_KEY")
 if API_KEY:
     st.success("API Key loaded from .env")
 else:
-    API_KEY = st.secrets["RIOT_API_KEY"]
-    if API_KEY:
+    try:
+        API_KEY = st.secrets["RIOT_API_KEY"]
         st.success("API Key loaded from Streamlit secrets")
-    else:
-        st.error("RIOT_API_KEY not found in .env or Streamlit secrets")
+    except Exception as e:
+        API_KEY = None
+        st.error(f"RIOT_API_KEY not found in .env or Streamlit secrets: {e}")
 st.set_page_config(page_title="Riot Rank Checker", page_icon="🎮")
 st.title("🏆 Riot ID Bulk Rank Checker")
 
