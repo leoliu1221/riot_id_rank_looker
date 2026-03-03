@@ -33,32 +33,33 @@ with st.sidebar:
     }
     choice = st.selectbox("Select Region", list(region_options.keys()))
     REG = region_options[choice]
+    
+    # Cache management
+    if st.button("🔄 Clear Cached Ranks"):
+        st.cache_data.clear()
+        st.toast("Cache cleared!")
 
-# --- API FETCH FUNCTION ---
-def get_player_rank(riot_id):
+# --- CACHED API FETCH FUNCTION ---
+# ttl=3600 means results are saved for 1 hour (3600 seconds)
+@st.cache_data(ttl=43200, show_spinner=False)
+def get_player_rank(riot_id, region_id, region_route):
     try:
-        # 1. Input Validation: Ensure # exists
         if '#' not in riot_id:
-            return "Invalid ID Format", 0, "Invalid ID Format", 0
+            return "Invalid ID", 0, "Invalid ID", 0
             
         name, tag = riot_id.split('#')
         
-        # 2. Get PUUID
-        acc_url = f"https://{REG['route']}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
+        # 1. Get PUUID
+        acc_url = f"https://{region_route}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}?api_key={API_KEY}"
         acc_res = requests.get(acc_url)
         
-        # Handle 404 (Not Found) or 403 (Invalid Key)
         if acc_res.status_code != 200:
-            return "Account Not Found", 0, "N/A", 0
+            return "Not Found", 0, "N/A", 0
             
-        acc_data = acc_res.json()
-        puuid = acc_data.get('puuid') # Use .get() to avoid KeyError
+        puuid = acc_res.json().get('puuid')
 
-        if not puuid:
-            return "PUUID Missing", 0, "N/A", 0
-
-        # 3. Get Rank Data
-        league_url = f"https://{REG['id']}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
+        # 2. Get Rank Data
+        league_url = f"https://{region_id}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}?api_key={API_KEY}"
         league_res = requests.get(league_url)
         
         if league_res.status_code != 200:
@@ -66,29 +67,21 @@ def get_player_rank(riot_id):
             
         league_data = league_res.json()
 
-        # Initialize defaults
         solo_rank, solo_lp = "Unranked", 0
         flex_rank, flex_lp = "Unranked", 0
 
-        # Loop through results to find specific queues
         for entry in league_data:
-            queue = entry.get('queueType')
-            tier = entry.get('tier', 'Unknown')
-            rank = entry.get('rank', '')
-            lp = entry.get('leaguePoints', 0)
-
-            if queue == 'RANKED_SOLO_5x5':
-                solo_rank = f"{tier} {rank}".strip()
-                solo_lp = lp
-            elif queue == 'RANKED_FLEX_SR':
-                flex_rank = f"{tier} {rank}".strip()
-                flex_lp = lp
+            if entry['queueType'] == 'RANKED_SOLO_5x5':
+                solo_rank = f"{entry['tier']} {entry['rank']}"
+                solo_lp = entry['leaguePoints']
+            elif entry['queueType'] == 'RANKED_FLEX_SR':
+                flex_rank = f"{entry['tier']} {entry['rank']}"
+                flex_lp = entry['leaguePoints']
                 
         return solo_rank, solo_lp, flex_rank, flex_lp
 
     except Exception:
-        # Catch-all for network timeouts or other weirdness
-        return "Not Found", 0, "Not Found", 0
+        return "Error", 0, "Error", 0
 
 # --- MAIN UI ---
 input_text = st.text_area("Enter Riot IDs (one per line)", height=200, placeholder="Faker#KR1\nDoublelift#NA1")
