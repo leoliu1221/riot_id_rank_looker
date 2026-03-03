@@ -1,7 +1,7 @@
 [project]
 name = "riot-id-rank-looker"
 version = "0.1.0"
-description = "Add your description here"
+description = "A high-performance bulk rank checker for League of Legends using Riot ID, featuring parallel API fetching and SQLite persistence."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
