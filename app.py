@@ -127,18 +127,55 @@ if st.button("Check Ranks"):
         # Create DataFrame
         df = pd.DataFrame(results)
         
-        # Display the interactive table
-        st.subheader("Results")
+# --- 1. DISPLAY TABLE ---
+        st.subheader("📋 Detailed Results")
         st.dataframe(df, use_container_width=True)
-        
-        # --- DOWNLOAD SECTION ---
+
+        # --- 2. SUMMARY CALCULATIONS ---
         st.divider()
-        csv = df.to_csv(index=False).encode('utf-8')
+        st.header("📊 Rank Distribution Summary")
+
+        # Define the proper order for ranks to sort the charts correctly
+        rank_order = [
+            "CHALLENGER", "GRANDMASTER", "MASTER", 
+            "DIAMOND", "EMERALD", "PLATINUM", "GOLD", 
+            "SILVER", "BRONZE", "IRON", "Unranked", "Not Found"
+        ]
+
+        # Helper function to extract just the Tier (e.g., "GOLD IV" -> "GOLD")
+        def get_tier(rank_str):
+            return rank_str.split(' ')[0]
+
+        df['Solo Tier'] = df['Solo Rank'].apply(get_tier)
+        df['Flex Tier'] = df['Flex Rank'].apply(get_tier)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Solo Queue")
+            solo_summary = df['Solo Tier'].value_counts().reindex(rank_order).dropna()
+            if not solo_summary.empty:
+                st.bar_chart(solo_summary, color="#ff4b4b")
+            else:
+                st.info("No Solo Queue data found.")
+
+        with col2:
+            st.subheader("Flex Queue")
+            flex_summary = df['Flex Tier'].value_counts().reindex(rank_order).dropna()
+            if not flex_summary.empty:
+                st.bar_chart(flex_summary, color="#0072f2")
+            else:
+                st.info("No Flex Queue data found.")
+
+        # --- 3. DOWNLOAD SECTION ---
+        st.divider()
+        # Remove the helper columns before downloading
+        csv_df = df.drop(columns=['Solo Tier', 'Flex Tier'])
+        csv = csv_df.to_csv(index=False).encode('utf-8')
         
         st.download_button(
-            label="📥 Download Results as CSV",
+            label="📥 Download Full Report (CSV)",
             data=csv,
-            file_name="riot_ranks_bulk.csv",
-            mime="text/csv",
-            help="Click to download the table above as a CSV file for Excel or Google Sheets."
+            file_name="riot_rank_report.csv",
+            mime="text/csv"
         )
