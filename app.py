@@ -8,7 +8,14 @@ from dotenv import load_dotenv
 # Load .env file automatically
 load_dotenv()
 API_KEY = os.getenv("RIOT_API_KEY")
-
+if API_KEY:
+    st.success("API Key loaded from .env")
+else:
+    API_KEY = st.secrets["RIOT_API_KEY"] if "RIOT_API_KEY" in st.secrets else None
+    if API_KEY:
+        st.success("API Key loaded from Streamlit secrets")
+    else:
+        st.error("RIOT_API_KEY not found in .env or Streamlit secrets")
 st.set_page_config(page_title="Riot Rank Checker", page_icon="🎮")
 st.title("🏆 Riot ID Bulk Rank Checker")
 
@@ -25,11 +32,6 @@ with st.sidebar:
     }
     choice = st.selectbox("Select Region", list(region_options.keys()))
     REG = region_options[choice]
-    
-    if API_KEY:
-        st.success("API Key loaded from .env")
-    else:
-        st.error("RIOT_API_KEY not found in .env")
 
 # --- API FETCH FUNCTION ---
 def get_player_rank(riot_id):
